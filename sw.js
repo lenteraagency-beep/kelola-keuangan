@@ -1,14 +1,14 @@
 // Service worker: membuat aplikasi tetap bisa dibuka tanpa internet.
 // Naikkan angka versi setiap kali Anda mengubah file aplikasi.
-const CACHE = "langganan-v1";
+const CACHE = "langganan-v5";
 const FILES = [
   "./",
   "./index.html",
   "./manifest.webmanifest",
-  "./icons/icon-192.png",
-  "./icons/icon-512.png",
-  "./icons/icon-maskable-512.png",
-  "./icons/apple-touch-icon.png"
+  "./icon-192.png",
+  "./icon-512.png",
+  "./icon-maskable-512.png",
+  "./apple-touch-icon.png"
 ];
 
 self.addEventListener("install", (e) => {

@@ -8,8 +8,8 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#171716">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icons/icon-192.png" type="image/png">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Langganan">
@@ -245,16 +245,30 @@ function getPeriod(kind){
 function salesF(){return state.sales.filter(function(s){return ui.plan==="all"||s.planId===ui.plan;});}
 function accsF(){return state.accounts.filter(function(a){return ui.plan==="all"||a.planId===ui.plan;});}
 function revenue(from,to,list){return(list||salesF()).reduce(function(a,s){return a+(s.paid&&s.paidDate>=from&&s.paidDate<=to?s.price:0);},0);}
+function mode(a){return a.costMode||((a.cost||0)>0?"monthly":"once");}
+function hppSeat(a){return a&&mode(a)==="once"&&a.seats?(a.buy||0)/a.seats:null;}
+function hppSale(s){var h=hppSeat(acc(s.accountId));return h==null?null:h*Q(s);}
+function batchSales(a){var t=today();return state.sales.filter(function(s){return s.accountId===a.id&&(mode(a)==="once"||isActive(s,t));});}
+function batchStats(a){
+  var list=batchSales(a),sold=0,free=0,rev=0,unp=0;
+  list.forEach(function(s){if(s.price>0){sold+=Q(s);if(s.paid)rev+=s.price;else unp+=s.price;}else free+=Q(s);});
+  var used=sold+free,avail=Math.max(0,(a.seats||0)-used),h=hppSeat(a)||0,p=plan(a.planId),buy=mode(a)==="once"?(a.buy||0):0;
+  return{sold:sold,free:free,used:used,avail:avail,rev:rev,unp:unp,buy:buy,hpp:h,stockVal:avail*h,potential:avail*(p?p.price:0),unitPrice:p?p.price:0,gap:rev-buy};
+}
+function batchOpen(a){var t=today();return!a.until||a.until>=t;}
 function modalCost(from,to){
-  // biaya modal akun dihitung per bulan berjalan; bulan di masa depan tidak dihitung
+  // stok sekali bayar: dihitung sekali pada tanggal beli. Akun bulanan: dihitung tiap bulan berjalan.
+  var list=accsF(),total=0;
+  list.forEach(function(a){if(mode(a)==="once"&&a.since&&a.since>=from&&a.since<=to)total+=a.buy||0;});
+  var ml=list.filter(function(a){return mode(a)==="monthly";});
   var capTo=monthEnd(new Date().getFullYear(),new Date().getMonth());
   if(to>capTo)to=capTo;
-  var list=accsF(); if(!list.length||from>to)return 0;
-  if(from==="0000-01-01"){var mins=list.map(function(a){return a.since||today();}).sort();from=mins[0];}
-  var f=s2d(from),total=0,y=f.getFullYear(),m=f.getMonth();
+  if(!ml.length||from>to)return total;
+  if(from==="0000-01-01"){var mins=ml.map(function(a){return a.since||today();}).sort();from=mins[0];}
+  var f=s2d(from),y=f.getFullYear(),m=f.getMonth();
   for(var guard=0;guard<600;guard++){
     var ms=monthStart(y,m),me=monthEnd(y,m); if(ms>to)break;
-    list.forEach(function(a){if(accActive(a,ms,me))total+=a.cost||0;});
+    ml.forEach(function(a){if(accActive(a,ms,me))total+=a.cost||0;});
     m++;if(m>11){m=0;y++;}
   }
   return total;
@@ -265,9 +279,24 @@ function seatInfo(){
   var t=today(),accs=accsF().filter(function(a){return accActive(a,t,t);});
   var cap=accs.reduce(function(a,x){return a+(x.seats||0);},0);
   var ids={};accs.forEach(function(a){ids[a.id]=1;});
-  var used=salesF().filter(function(s){return isActive(s,t)&&s.accountId&&ids[s.accountId];}).length;
+  var used=sumQ(salesF().filter(function(s){return isActive(s,t)&&s.accountId&&ids[s.accountId];}));
   return{cap:cap,used:used,free:Math.max(0,cap-used),n:accs.length};
 }
+function Q(s){return Math.max(1,parseInt(s&&s.qty,10)||1);}
+function sumQ(list){return list.reduce(function(a,s){return a+Q(s);},0);}
+function pickAccount(planId,start,end,exceptId,need){
+  need=need||1;
+  var t=today(),best="";
+  state.accounts.forEach(function(a){
+    if(best)return;
+    if(!accActive(a,start||t,end||t))return;
+    if(a.planId&&a.planId!==planId)return;
+    var busy=sumQ(state.sales.filter(function(x){return x.accountId===a.id&&x.id!==exceptId&&x.start<=(end||t)&&x.end>=(start||t);}));
+    if(busy+need<=a.seats)best=a.id;
+  });
+  return best;
+}
+function noAccActive(){var t=today();return salesF().filter(function(s){return isActive(s,t)&&(!s.accountId||!acc(s.accountId));});}
 function accUsed(a,t){t=t||today();return state.sales.filter(function(s){return s.accountId===a.id&&isActive(s,t);});}
 
 // ================= icons =================
@@ -284,7 +313,7 @@ var IC={
   gauge:'<path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-5"/>'
 };
 function ic(n){return'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+IC[n]+'</svg>';}
-var PAGES=[["dashboard","Dashboard"],["penjualan","Penjualan"],["seat","Seat"],["biaya","Biaya"],["pengaturan","Pengaturan"]];
+var PAGES=[["dashboard","Dashboard"],["penjualan","Penjualan"],["seat","Stok Seat"],["biaya","Biaya"],["pengaturan","Pengaturan"]];
 
 // ================= render shell =================
 function renderShell(){
@@ -311,7 +340,7 @@ function pDashboard(){
   var rev=revenue(P.from,P.to),mod=modalCost(P.from,P.to),ext=extraCost(P.from,P.to),laba=rev-mod-ext;
   var up=unpaid(P.from,P.to),upSum=up.reduce(function(a,s){return a+s.price;},0);
   var act=salesF().filter(function(s){return isActive(s,t);});
-  var perPlan={};act.forEach(function(s){perPlan[s.planId]=(perPlan[s.planId]||0)+1;});
+  var perPlan={};act.forEach(function(s){perPlan[s.planId]=(perPlan[s.planId]||0)+Q(s);});
   var seats=seatInfo();
   function cmp(cur,prevVal){
     if(!P.prev)return"Seluruh data yang tercatat";
@@ -323,14 +352,19 @@ function pDashboard(){
   var prevLaba=P.prev?prevRev-modalCost(P.prev.from,P.prev.to)-extraCost(P.prev.from,P.prev.to):0;
   var h='<div class="head"><div><div class="hello">'+greet()+', '+esc(state.settings.owner||"Admin")+'</div><h1>Dashboard</h1><div class="meta">'+fd(t)+' · Laporan <b>'+P.label+'</b></div></div>'+
     '<div class="filters"><div class="seg">'+[["bulan","Bulan ini"],["lalu","Bulan lalu"],["tahun","Tahun ini"],["semua","Semua"]].map(function(x){return'<button data-period="'+x[0]+'" class="'+(ui.period===x[0]?"on":"")+'">'+x[1]+'</button>';}).join("")+'</div>'+planSelect()+'</div></div>';
+  var na=noAccActive();
+  if(na.length&&state.accounts.length)h+='<div class="card" style="margin-bottom:14px;border-color:var(--warn);display:flex;gap:14px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:220px"><b>'+na.length+' langganan aktif belum dihubungkan ke stok.</b><div class="cap" style="margin:2px 0 0">Karena itu seat terpakai dan utilisasi belum terhitung. Pilih stoknya lewat tombol <b>Ubah</b> di tiap penjualan, atau hubungkan otomatis ke stok yang seatnya masih kosong.</div></div><button class="btn" data-act="autoassign">Hubungkan otomatis</button><a class="btn ghost" href="#penjualan" data-act="show-noacc">Lihat daftarnya</a></div>';
+  var noBuy=state.accounts.filter(function(a){return mode(a)==="once"&&!a.buy&&batchOpen(a);});
+  if(noBuy.length)h+='<div class="card" style="margin-bottom:14px;border-color:var(--warn);display:flex;gap:14px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:220px"><b>Harga beli '+noBuy.length+' stok belum diisi.</b><div class="cap" style="margin:2px 0 0">Isi harga beli di menu <b>Stok Seat</b> supaya modal per seat dan laba per penjualan terhitung. Kalau pembeliannya sudah dicatat di menu <b>Biaya</b>, hapus catatan di Biaya setelah harga beli diisi, supaya modal tidak terhitung dua kali.</div></div><a class="btn" href="#seat">Buka Stok Seat</a></div>';
   h+='<div class="grid k3">'+
     kpi("Pendapatan diterima",rp(rev),cmp(rev,prevRev),"money")+
     kpi("Laba bersih",'<span style="color:'+(laba<0?"var(--bad)":"inherit")+'">'+rp(laba)+'</span>',"Modal "+rpS(mod)+" · tambahan "+rpS(ext)+(P.prev?" · "+cmp(laba,prevLaba):""),"trend",true)+
     kpi("Sisa tagihan",rp(upSum),up.length?up.length+" penjualan belum dibayar":"Semua penjualan sudah lunas","bill")+
-    kpi("Langganan aktif",String(act.length),Object.keys(perPlan).length?Object.keys(perPlan).map(function(k){return perPlan[k]+" "+esc(planName(k));}).join(" · "):"Belum ada langganan aktif","cal")+
-    kpi("Seat tersedia",String(seats.free),"Dari "+seats.cap+" seat di "+seats.n+" akun aktif","seat")+
+    kpi("Seat aktif terpakai",String(sumQ(act)),Object.keys(perPlan).length?act.length+" pembeli · "+Object.keys(perPlan).map(function(k){return perPlan[k]+" "+esc(planName(k));}).join(" · "):"Belum ada langganan aktif","cal")+
+    kpi("Seat tersedia",String(seats.free),"Dari "+seats.cap+" seat di "+seats.n+" stok aktif","seat")+
     kpi("Utilisasi seat",seats.cap?Math.round(seats.used/seats.cap*100)+"%":"—",seats.used+" dari "+seats.cap+" seat terpakai hari ini","gauge")+
   '</div>';
+  h+=stockAndSummary(P,rev,mod,ext,laba);
   // chart
   chartData=lastMonths(6);
   h+='<div class="grid c21"><div class="card"><h2>Apakah pendapatan menutup biaya tiap bulan?</h2><div class="cap">Pendapatan diterima, biaya (modal + tambahan), dan laba per bulan</div>'+
@@ -360,8 +394,50 @@ function pDashboard(){
   if(!unp.length)h+='<div class="empty">Tidak ada tagihan yang tertunggak.</div>';
   else h+='<div class="list">'+unp.slice(0,8).map(function(s){return'<div class="it"><div class="m"><b>'+esc(s.customer)+'</b><small>'+esc(planName(s.planId))+' · mulai '+fd(s.start)+'</small></div><b style="flex:none">'+rp(s.price)+'</b><button class="btn ghost sm" data-pay="'+s.id+'">Tandai lunas</button></div>';}).join("")+'</div>';
   h+='</div></div>';
-  if(!state.sales.length&&!state.accounts.length)h+='<div class="card" style="text-align:center"><h2>Mulai di sini</h2><div class="cap" style="margin-bottom:12px">Tambahkan akun/seat di menu Seat, lalu catat penjualan di menu Penjualan. Atau coba dulu dengan data contoh.</div><button class="btn" data-act="sample">Isi data contoh</button></div>';
+  if(!state.sales.length&&!state.accounts.length)h+='<div class="card" style="text-align:center"><h2>Mulai di sini</h2><div class="cap" style="margin-bottom:12px">Tambahkan stok di menu Stok Seat, lalu catat penjualan di menu Penjualan. Atau coba dulu dengan data contoh.</div><button class="btn" data-act="sample">Isi data contoh</button></div>';
   return h;
+}
+function stockAndSummary(P,rev,mod,ext,laba){
+  var batches=accsF().filter(function(a){return batchOpen(a);});
+  var h='<div class="grid c21"><div class="card"><h2>Stok seat</h2><div class="cap">Seat yang dibeli, sudah terjual, diberikan gratis, dan masih tersedia</div>';
+  var tot={seats:0,sold:0,free:0,avail:0,stockVal:0,potential:0};
+  if(!batches.length)h+='<div class="empty">Belum ada stok aktif. Tambahkan di menu <b>Stok Seat</b>.</div>';
+  else{
+    h+='<div class="tbl"><table style="min-width:620px"><thead><tr><th>Stok</th><th class="num">Total</th><th class="num">Terjual</th><th class="num">Gratis</th><th class="num">Tersedia</th><th class="num">Modal/seat</th><th>Balik modal</th></tr></thead><tbody>';
+    batches.forEach(function(a){var b=batchStats(a);tot.seats+=a.seats;tot.sold+=b.sold;tot.free+=b.free;tot.avail+=b.avail;tot.stockVal+=b.stockVal;tot.potential+=b.potential;
+      h+='<tr><td><b>'+esc(a.name)+'</b><small>'+esc(a.planId?planName(a.planId):"Semua paket")+(a.until?' · s/d '+fdS(a.until):'')+'</small></td><td class="num">'+a.seats+'</td><td class="num">'+b.sold+'</td><td class="num">'+b.free+'</td><td class="num"><b>'+b.avail+'</b></td>'+
+        '<td class="num">'+(mode(a)==="once"?(a.buy?rp(Math.round(b.hpp)):'<span class="badge b-warn">Belum diisi</span>'):rp(a.cost)+'<small>per bulan</small>')+'</td><td>'+breakEven(a,b)+'</td></tr>';});
+    h+='<tr><td><b>Total</b></td><td class="num"><b>'+tot.seats+'</b></td><td class="num"><b>'+tot.sold+'</b></td><td class="num"><b>'+tot.free+'</b></td><td class="num"><b>'+tot.avail+'</b></td><td></td><td></td></tr></tbody></table></div>';
+  }
+  h+='</div>';
+  var sold=salesF().filter(function(s){return s.paid&&s.price>0&&s.paidDate>=P.from&&s.paidDate<=P.to;});
+  var gift=salesF().filter(function(s){return s.price===0&&s.start>=P.from&&s.start<=P.to;});
+  var hSold=0,hGift=0,unknown=0;
+  sold.forEach(function(s){var x=hppSale(s);if(x==null)unknown++;else hSold+=x;});
+  gift.forEach(function(s){var x=hppSale(s);if(x!=null)hGift+=x;});
+  var labaJual=rev-hSold-hGift-ext;
+  function row(l,v,o){o=o||{};return'<div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;'+(o.top?'border-top:1px solid var(--border);margin-top:4px;padding-top:11px;':'')+'"><span style="color:'+(o.b?'var(--text)':'var(--text-2)')+';'+(o.b?'font-weight:600':'')+'">'+l+'</span><span style="font-variant-numeric:tabular-nums;white-space:nowrap;'+(o.b?'font-weight:700':'')+';color:'+(o.neg?'var(--bad)':'inherit')+'">'+v+'</span></div>';}
+  h+='<div class="card"><h2>Ringkasan laba</h2><div class="cap">'+P.label+'</div>'+
+    row("Pendapatan diterima",rp(rev))+
+    row("Modal belanja seat","− "+rp(mod))+
+    row("Biaya tambahan","− "+rp(ext))+
+    row("Laba bersih (kas)",rp(laba),{b:1,top:1,neg:laba<0})+
+    '<div class="cap" style="margin:2px 0 10px">Uang masuk dikurangi uang keluar di periode ini.</div>'+
+    row("Modal seat yang terjual","− "+rp(Math.round(hSold)))+
+    row("Modal seat gratis","− "+rp(Math.round(hGift)))+
+    row("Laba atas seat terjual",rp(Math.round(labaJual)),{b:1,top:1,neg:labaJual<0})+
+    '<div class="cap" style="margin:2px 0 10px">Hanya menghitung modal seat yang sudah keluar. Sisa modal masih tersimpan di stok.'+(unknown?' <b>'+unknown+' penjualan belum terhubung ke stok</b>, modalnya belum terhitung.':'')+'</div>'+
+    row("Nilai modal stok tersisa",rp(Math.round(tot.stockVal)),{top:1})+
+    row("Potensi pendapatan stok tersisa",rp(tot.potential))+
+    row("Laba kas jika semua stok terjual",rp(laba+tot.potential),{b:1})+
+  '</div></div>';
+  return h;
+}
+function breakEven(a,b){
+  if(mode(a)!=="once"||!b.buy)return'<span class="cap">—</span>';
+  if(b.gap>=0)return'<span class="badge b-ok">✓ Untung '+rpS(b.gap)+'</span>';
+  var need=b.unitPrice?Math.ceil(-b.gap/b.unitPrice):0;
+  return'<span class="badge b-warn">Kurang '+rpS(-b.gap)+'</span>'+(need?'<small>≈ '+need+' seat lagi</small>':'');
 }
 function hasRenewal(s){return state.sales.some(function(x){return x!==s&&x.customer.toLowerCase()===s.customer.toLowerCase()&&x.planId===s.planId&&x.start>s.end;});}
 function kpi(l,v,n,i,hl){return'<div class="card kpi'+(hl?" hl":"")+'"><div class="top"><span>'+l+'</span><span class="ico">'+ic(i)+'</span></div><div class="val">'+v+'</div><div class="note">'+n+'</div></div>';}
@@ -418,21 +494,23 @@ function pSales(){
     if(ui.status==="soon"&&st!=="soon")return false;
     if(ui.status==="ended"&&st!=="ended")return false;
     if(ui.status==="unpaid"&&s.paid)return false;
+    if(ui.status==="noacc"&&!(isActive(s,t)&&(!s.accountId||!acc(s.accountId))))return false;
     if(q&&(s.customer+" "+(s.contact||"")+" "+(s.note||"")+" "+planName(s.planId)+" "+((acc(s.accountId)||{}).name||"")).toLowerCase().indexOf(q)<0)return false;
     return true;
   }).sort(function(a,b){return a.start<b.start?1:a.start>b.start?-1:0;});
   var h='<div class="head"><div><h1>Penjualan</h1><div class="meta">'+state.sales.length+' penjualan tercatat</div></div><div class="filters"><button class="btn" data-act="new-sale">+ Tambah penjualan</button></div></div>';
   h+='<div class="card"><div class="toolbar"><input id="q" placeholder="Cari pelanggan, kontak, akun…" value="'+esc(ui.q)+'">'+
-     '<select data-ui="status">'+[["all","Semua status"],["active","Aktif"],["soon","Segera berakhir"],["ended","Berakhir"],["unpaid","Belum dibayar"]].map(function(x){return'<option value="'+x[0]+'"'+(ui.status===x[0]?" selected":"")+'>'+x[1]+'</option>';}).join("")+'</select>'+planSelect()+
+     '<select data-ui="status">'+[["all","Semua status"],["active","Aktif"],["soon","Segera berakhir"],["ended","Berakhir"],["unpaid","Belum dibayar"],["noacc","Aktif tanpa stok"]].map(function(x){return'<option value="'+x[0]+'"'+(ui.status===x[0]?" selected":"")+'>'+x[1]+'</option>';}).join("")+'</select>'+planSelect()+
      '<span class="sp"></span><button class="btn ghost sm" data-act="csv">Ekspor CSV</button></div>';
   if(!rows.length)h+='<div class="empty">'+(state.sales.length?"Tidak ada penjualan yang cocok dengan filter.":"Belum ada penjualan. Tekan <b>+ Tambah penjualan</b> untuk mulai.")+'</div>';
   else{
-    h+='<div class="tbl"><table><thead><tr><th>Pelanggan</th><th>Paket / Akun</th><th>Periode</th><th class="num">Harga</th><th>Status</th><th>Pembayaran</th><th></th></tr></thead><tbody>';
+    h+='<div class="tbl"><table><thead><tr><th>Pelanggan</th><th>Paket / Akun</th><th>Periode</th><th class="num">Harga</th><th class="num">Laba</th><th>Status</th><th>Pembayaran</th><th></th></tr></thead><tbody>';
     rows.forEach(function(s){var st=STATUS[saleStatus(s,t)],a=acc(s.accountId);
       h+='<tr><td><b>'+esc(s.customer)+'</b><small>'+esc(s.contact||"—")+'</small></td>'+
-        '<td>'+esc(planName(s.planId))+'<small>'+(a?esc(a.name):"Tanpa akun")+'</small></td>'+
+        '<td>'+esc(planName(s.planId))+(Q(s)>1?' · <b>'+Q(s)+' seat</b>':'')+'<small>'+(a?esc(a.name):"Tanpa akun")+'</small></td>'+
         '<td style="white-space:nowrap">'+fdS(s.start)+' – '+fd(s.end)+'</td>'+
-        '<td class="num"><b>'+rp(s.price)+'</b></td>'+
+        '<td class="num"><b>'+rp(s.price)+'</b>'+(Q(s)>1&&s.price?'<small>'+rp(Math.round(s.price/Q(s)))+'/seat</small>':'')+(s.price===0?'<small>gratis</small>':'')+'</td>'+
+        (function(){var x=hppSale(s);if(x==null)return'<td class="num"><span class="cap">—</span><small>'+(a?'harga beli kosong':'belum ada stok')+'</small></td>';var l=s.price-x;return'<td class="num"><b style="color:'+(l<0?'var(--bad)':'var(--good)')+'">'+(l<0?'−':'')+rp(Math.round(Math.abs(l)))+'</b><small>modal '+rp(Math.round(x))+'</small></td>';})()+
         '<td><span class="badge '+st[1]+'">'+st[0]+'</span></td>'+
         '<td>'+(s.paid?'<span class="badge b-ok">Lunas</span><small>'+fd(s.paidDate)+'</small>':'<span class="badge b-bad">Belum</span> <button class="lnk" data-pay="'+s.id+'">Tandai lunas</button>')+'</td>'+
         '<td class="acts"><button class="lnk" data-renew="'+s.id+'">Perpanjang</button><button class="lnk" data-edit-sale="'+s.id+'">Ubah</button><button class="lnk del" data-del-sale="'+s.id+'">Hapus</button></td></tr>';});
@@ -444,16 +522,18 @@ function saleForm(s,isNew){
   s=s||{};var t=today();
   var pid=s.planId||(state.plans[0]||{}).id||"";
   var start=s.start||t;
-  var accOpts='<option value="">— Tanpa akun —</option>'+state.accounts.filter(function(a){return accActive(a,t,t)||a.id===s.accountId;}).map(function(a){var u=accUsed(a).filter(function(x){return x.id!==s.id;}).length;return'<option value="'+a.id+'"'+(s.accountId===a.id?" selected":"")+'>'+esc(a.name)+' ('+u+'/'+a.seats+' terpakai)'+(a.planId?" · "+esc(planName(a.planId)):"")+'</option>';}).join("");
+  if(isNew&&s.accountId===undefined)s.accountId=pickAccount(pid,start,s.end||endAfterMonths(start,1),null,Q(s));
+  var accOpts='<option value="">— Tanpa stok —</option>'+state.accounts.filter(function(a){return accActive(a,t,t)||a.id===s.accountId;}).map(function(a){var u=sumQ(accUsed(a).filter(function(x){return x.id!==s.id;}));return'<option value="'+a.id+'"'+(s.accountId===a.id?" selected":"")+'>'+esc(a.name)+' ('+u+'/'+a.seats+' terpakai)'+(a.planId?" · "+esc(planName(a.planId)):"")+'</option>';}).join("");
   var h='<h2>'+(isNew?"Tambah penjualan":"Ubah penjualan")+'</h2><form class="frm" id="sale-form" data-id="'+esc(s.id||"")+'" autocomplete="off">'+
     '<label>Nama pelanggan *</label><input name="customer" value="'+esc(s.customer||"")+'" maxlength="60" placeholder="mis. Kirwan">'+
     '<label>Kontak / WhatsApp</label><input name="contact" value="'+esc(s.contact||"")+'" maxlength="60" placeholder="08xxxxxxxxxx">'+
     '<div class="r2"><div><label>Paket</label><select name="planId">'+state.plans.map(function(p){return'<option value="'+p.id+'"'+(p.id===pid?" selected":"")+'>'+esc(p.name)+'</option>';}).join("")+'</select></div>'+
-    '<div><label>Akun / seat</label><select name="accountId">'+accOpts+'</select></div></div>'+
+    '<div><label>Stok / akun</label><select name="accountId">'+accOpts+'</select></div></div>'+
     '<div class="r2"><div><label>Mulai</label><input type="date" name="start" value="'+start+'"></div>'+
     '<div><label>Durasi</label><select name="dur"><option value="1">1 bulan</option><option value="3">3 bulan</option><option value="6">6 bulan</option><option value="12">12 bulan</option><option value="x"'+(isNew?"":" selected")+'>Atur tanggal sendiri</option></select></div></div>'+
     '<div class="r2"><div><label>Berakhir</label><input type="date" name="end" value="'+(s.end||endAfterMonths(start,1))+'"></div>'+
-    '<div><label>Harga (Rp)</label><input name="price" inputmode="numeric" class="amt" value="'+num(s.price!=null?s.price:((plan(pid)||{}).price||0))+'"></div></div>'+
+    '<div class="r2" style="grid-template-columns:110px 1fr"><div><label>Jumlah seat</label><input name="qty" type="number" min="1" max="999" value="'+Q(s)+'"></div><div><label>Harga total (Rp)</label><input name="price" inputmode="numeric" class="amt" value="'+num(s.price!=null?s.price:((plan(pid)||{}).price||0))+'"></div></div></div>'+
+    '<div class="cap" style="margin:6px 0 0">Isi 0 untuk seat yang diberikan gratis.</div>'+
     '<label class="chk"><input type="checkbox" name="paid"'+(s.paid||isNew?" checked":"")+'> Sudah dibayar</label>'+
     '<div id="paidbox"'+(s.paid||isNew?"":' style="display:none"')+'><label>Tanggal bayar</label><input type="date" name="paidDate" value="'+(s.paidDate||t)+'"></div>'+
     '<label>Catatan</label><input name="note" value="'+esc(s.note||"")+'" maxlength="100" placeholder="opsional">'+
@@ -464,32 +544,49 @@ function saleForm(s,isNew){
 // ================= Seat =================
 function pSeat(){
   var t=today(),si=seatInfo();
-  var h='<div class="head"><div><h1>Seat Management</h1><div class="meta">'+si.n+' akun aktif · <b>'+si.used+'/'+si.cap+'</b> seat terpakai · '+si.free+' tersedia</div></div><div class="filters">'+planSelect()+'<button class="btn" data-act="new-acc">+ Tambah akun</button></div></div>';
-  var list=accsF().slice().sort(function(a,b){return(accActive(b,t,t)?1:0)-(accActive(a,t,t)?1:0)||a.name.localeCompare(b.name);});
-  if(!list.length)return h+'<div class="card empty">Belum ada akun. Akun adalah langganan induk yang Anda beli (mis. 1 akun Premium berisi 5 seat), lengkap dengan biaya modal per bulan.<br><br><button class="btn" data-act="new-acc">+ Tambah akun</button></div>';
+  var h='<div class="head"><div><h1>Stok Seat</h1><div class="meta">'+si.n+' stok aktif · <b>'+si.used+'/'+si.cap+'</b> seat terpakai · '+si.free+' tersedia</div></div><div class="filters">'+planSelect()+'<button class="btn" data-act="new-acc">+ Tambah stok</button></div></div>';
+  var list=accsF().slice().sort(function(a,b){return(batchOpen(b)?1:0)-(batchOpen(a)?1:0)||(b.since||"").localeCompare(a.since||"");});
+  if(!list.length)return h+'<div class="card empty">Belum ada stok. Setiap kali Anda membeli seat, catat di sini: paket, jumlah seat, harga beli total, dan masa aktifnya.<br><br><button class="btn" data-act="new-acc">+ Tambah stok</button></div>';
   h+='<div class="grid accs">';
-  list.forEach(function(a){var on=accActive(a,t,t),users=accUsed(a,t),pct=a.seats?users.length/a.seats*100:0;
-    h+='<div class="card acc'+(on?"":" off")+'"><div class="row"><div><h3>'+esc(a.name)+'</h3><div class="cap" style="margin:2px 0 0">'+(a.planId?esc(planName(a.planId)):"Semua paket")+' · modal '+rp(a.cost)+'/bulan</div></div>'+
-      '<span class="badge '+(on?(users.length>=a.seats?"b-warn":"b-ok"):"b-mute")+'">'+(on?(users.length>=a.seats?"Penuh":"Aktif"):"Nonaktif")+'</span></div>'+
+  list.forEach(function(a){var open=batchOpen(a),b=batchStats(a),users=accUsed(a,t),pct=a.seats?b.used/a.seats*100:0,once=mode(a)==="once";
+    h+='<div class="card acc'+(open?"":" off")+'"><div class="row"><div><h3>'+esc(a.name)+'</h3><div class="cap" style="margin:2px 0 0">'+(a.planId?esc(planName(a.planId)):"Semua paket")+' · '+(once?'beli '+(a.buy?rp(a.buy):'<b style="color:var(--warn)">harga belum diisi</b>'):'modal '+rp(a.cost)+'/bulan')+'</div></div>'+
+      '<span class="badge '+(open?(b.avail<=0?"b-warn":"b-ok"):"b-mute")+'">'+(open?(b.avail<=0?"Habis":"Tersedia "+b.avail):"Selesai")+'</span></div>'+
       '<div class="bar"><div class="'+(pct>=100?"full":"")+'" style="width:'+Math.min(100,pct)+'%"></div></div>'+
-      '<div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--text-2)"><span><b style="color:var(--text)">'+users.length+'/'+a.seats+'</b> seat terpakai</span><span>Sejak '+fd(a.since)+(a.until?" · s/d "+fd(a.until):"")+'</span></div>'+
-      (users.length?'<div class="ppl">'+users.map(function(s){return'<div><span>'+esc(s.customer)+'</span><span>s/d '+fdS(s.end)+'</span></div>';}).join("")+'</div>':'')+
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:12.5px;color:var(--text-2);margin-top:4px">'+
+        '<div>Terjual<br><b style="color:var(--text);font-size:15px">'+b.sold+'</b></div><div>Gratis<br><b style="color:var(--text);font-size:15px">'+b.free+'</b></div><div>Tersedia<br><b style="color:var(--text);font-size:15px">'+b.avail+'</b> <span>/ '+a.seats+'</span></div></div>'+
+      (once&&a.buy?'<div class="ppl" style="margin-top:12px">'+
+        '<div><span>Modal per seat</span><b style="color:var(--text)">'+rp(Math.round(b.hpp))+'</b></div>'+
+        '<div><span>Uang masuk dari stok ini</span><b style="color:var(--text)">'+rp(b.rev)+'</b></div>'+
+        (b.unp?'<div><span>Belum dibayar</span><b style="color:var(--text)">'+rp(b.unp)+'</b></div>':'')+
+        '<div><span>Balik modal</span><span>'+breakEven(a,b).replace('<small>',' <span class="cap">').replace('</small>','</span>')+'</span></div>'+
+        (b.avail?'<div><span>Potensi sisa ('+b.avail+' × '+rpS(b.unitPrice)+')</span><b style="color:var(--text)">'+rp(b.potential)+'</b></div>':'')+
+      '</div>':'')+
+      '<div class="cap" style="margin:10px 0 0">Dibeli '+fd(a.since)+(a.until?' · aktif s/d '+fd(a.until):' · <b style="color:var(--warn)">masa aktif belum diisi</b>')+'</div>'+
+      (users.length?'<div class="ppl">'+users.map(function(s){return'<div><span>'+esc(s.customer)+(Q(s)>1?' ('+Q(s)+' seat)':'')+(s.price===0?' · gratis':'')+'</span><span>s/d '+fdS(s.end)+'</span></div>';}).join("")+'</div>':'')+
       (a.note?'<div class="cap" style="margin:10px 0 0">'+esc(a.note)+'</div>':'')+
       '<div class="actions" style="margin-top:12px"><button class="lnk" data-edit-acc="'+a.id+'">Ubah</button><button class="lnk del" data-del-acc="'+a.id+'">Hapus</button></div></div>';});
   return h+'</div>';
 }
 function accForm(a,isNew){
-  a=a||{};
-  var h='<h2>'+(isNew?"Tambah akun":"Ubah akun")+'</h2><form class="frm" id="acc-form" data-id="'+esc(a.id||"")+'" autocomplete="off">'+
-    '<label>Nama akun *</label><input name="name" value="'+esc(a.name||"")+'" maxlength="50" placeholder="mis. Akun Premium A">'+
+  a=a||{};var md=isNew?"once":mode(a),amt=md==="once"?a.buy:a.cost,since=a.since||today();
+  var h='<h2>'+(isNew?"Tambah stok seat":"Ubah stok seat")+'</h2><form class="frm" id="acc-form" data-id="'+esc(a.id||"")+'" autocomplete="off">'+
+    '<label>Nama stok *</label><input name="name" value="'+esc(a.name||"")+'" maxlength="50" placeholder="mis. Standard Nov 2026">'+
     '<div class="r2"><div><label>Paket</label><select name="planId"><option value="">Semua paket</option>'+state.plans.map(function(p){return'<option value="'+p.id+'"'+(a.planId===p.id?" selected":"")+'>'+esc(p.name)+'</option>';}).join("")+'</select></div>'+
-    '<div><label>Jumlah seat *</label><input name="seats" type="number" min="1" max="999" value="'+(a.seats||5)+'"></div></div>'+
-    '<label>Biaya modal per bulan (Rp)</label><input name="cost" inputmode="numeric" class="amt" value="'+num(a.cost)+'" placeholder="0">'+
-    '<div class="r2"><div><label>Aktif sejak</label><input type="date" name="since" value="'+(a.since||today())+'"></div>'+
-    '<div><label>Berhenti pada (opsional)</label><input type="date" name="until" value="'+(a.until||"")+'"></div></div>'+
-    '<label>Catatan</label><input name="note" value="'+esc(a.note||"")+'" maxlength="100" placeholder="mis. email login, tanggal tagihan">'+
+    '<div><label>Jumlah seat *</label><input name="seats" type="number" min="1" max="9999" value="'+(a.seats||1)+'"></div></div>'+
+    '<div class="r2"><div><label>Harga beli (Rp)</label><input name="amount" inputmode="numeric" class="amt" value="'+num(amt)+'" placeholder="0"></div>'+
+    '<div><label>Cara bayar</label><select name="costMode"><option value="once"'+(md==="once"?" selected":"")+'>Sekali bayar (total)</option><option value="monthly"'+(md==="monthly"?" selected":"")+'>Per bulan</option></select></div></div>'+
+    '<div class="cap" id="hpp-hint" style="margin:6px 0 0"></div>'+
+    '<div class="r2"><div><label>Tanggal beli</label><input type="date" name="since" value="'+since+'"></div>'+
+    '<div><label>Masa aktif s/d</label><input type="date" name="until" value="'+(a.until!=null?a.until:(isNew?endAfterMonths(since,1):""))+'"></div></div>'+
+    '<div class="cap" style="margin:6px 0 0">Isi masa aktif supaya perpanjangan bulan depan masuk ke stok yang baru.</div>'+
+    '<label>Catatan</label><input name="note" value="'+esc(a.note||"")+'" maxlength="100" placeholder="mis. email login, supplier">'+
     '<div class="err" id="ferr"></div><div class="actions"><button type="button" class="btn ghost" data-close>Batal</button><button class="btn" type="submit">Simpan</button></div></form>';
-  openModal(h);
+  openModal(h);hppHint();
+}
+function hppHint(){
+  var f=document.getElementById("acc-form");if(!f)return;var el=document.getElementById("hpp-hint");
+  var amt=parseAmt(f.amount.value),n=parseInt(f.seats.value,10)||0;
+  el.innerHTML=f.costMode.value==="once"?(amt&&n?'Modal per seat: <b>'+rp(Math.round(amt/n))+'</b> (harga beli total ÷ '+n+' seat)':'Isi harga beli total untuk semua seat di stok ini.'):'Dicatat sebagai biaya tiap bulan selama stok aktif.';
 }
 
 // ================= Biaya =================
@@ -498,7 +595,7 @@ function pBiaya(){
   var list=state.expenses.filter(function(e){return e.date>=P.from&&e.date<=P.to;}).sort(function(a,b){return a.date<b.date?1:-1;});
   var tot=list.reduce(function(a,e){return a+e.amount;},0),mod=modalCost(P.from,P.to);
   var h='<div class="head"><div><h1>Biaya</h1><div class="meta">Biaya tambahan di luar modal akun · <b>'+P.label+'</b></div></div><div class="filters"><div class="seg">'+[["bulan","Bulan ini"],["lalu","Bulan lalu"],["tahun","Tahun ini"],["semua","Semua"]].map(function(x){return'<button data-period="'+x[0]+'" class="'+(ui.period===x[0]?"on":"")+'">'+x[1]+'</button>';}).join("")+'</div></div></div>';
-  h+='<div class="grid c21"><div class="card"><h2>Daftar biaya tambahan</h2><div class="cap">Total '+rp(tot)+' · modal akun otomatis '+rp(mod)+' (dihitung dari menu Seat)</div>';
+  h+='<div class="grid c21"><div class="card"><h2>Daftar biaya tambahan</h2><div class="cap">Total '+rp(tot)+' · modal stok seat '+rp(mod)+' (dari menu Stok Seat)</div>';
   if(!list.length)h+='<div class="empty">Belum ada biaya tambahan di periode ini.</div>';
   else h+='<div class="tbl"><table style="min-width:0"><thead><tr><th>Tanggal</th><th>Keterangan</th><th class="num">Jumlah</th><th></th></tr></thead><tbody>'+list.map(function(e){return'<tr><td style="white-space:nowrap">'+fd(e.date)+'</td><td>'+esc(e.desc)+'</td><td class="num"><b>'+rp(e.amount)+'</b></td><td class="acts"><button class="lnk del" data-del-exp="'+e.id+'">Hapus</button></td></tr>';}).join("")+'</tbody></table></div>';
   h+='</div><div class="card"><h2>Tambah biaya</h2><div class="cap">Mis. iklan, pulsa, biaya admin transfer</div><form class="frm" id="exp-form" autocomplete="off">'+
@@ -554,20 +651,25 @@ document.addEventListener("click",function(e){
   if((v=el.getAttribute("data-del-sale"))){var ds=state.sales.find(function(x){return x.id===v;});confirmBox("Hapus penjualan?",esc(ds.customer)+" · "+esc(planName(ds.planId))+" · "+rp(ds.price),"Hapus",function(){state.sales=state.sales.filter(function(x){return x.id!==v;});commit("Penjualan dihapus");});return;}
   if((v=el.getAttribute("data-edit-acc"))){accForm(acc(v),false);return;}
   if((v=el.getAttribute("data-del-acc"))){var da=acc(v),n=state.sales.filter(function(x){return x.accountId===v;}).length;
-    confirmBox("Hapus akun?","Akun <b>"+esc(da.name)+"</b> akan dihapus."+(n?" "+n+" penjualan yang memakai akun ini tetap tersimpan, tapi tidak lagi terhubung ke akun mana pun.":"")+" Kalau akun hanya berhenti dipakai, lebih baik isi tanggal <i>Berhenti pada</i> agar riwayat biaya modalnya tetap terhitung.","Hapus",function(){state.accounts=state.accounts.filter(function(x){return x.id!==v;});state.sales.forEach(function(x){if(x.accountId===v)x.accountId="";});commit("Akun dihapus");});return;}
+    confirmBox("Hapus stok?","Stok <b>"+esc(da.name)+"</b> akan dihapus."+(n?" "+n+" penjualan yang memakai akun ini tetap tersimpan, tapi tidak lagi terhubung ke stok mana pun.":"")+" Riwayat modalnya juga ikut hilang dari perhitungan. Kalau stok sudah habis masa aktifnya, tidak perlu dihapus.","Hapus",function(){state.accounts=state.accounts.filter(function(x){return x.id!==v;});state.sales.forEach(function(x){if(x.accountId===v)x.accountId="";});commit("Stok dihapus");});return;}
   if((v=el.getAttribute("data-del-exp"))){state.expenses=state.expenses.filter(function(x){return x.id!==v;});commit("Biaya dihapus");return;}
   if(el.hasAttribute("data-rm-plan")){var row=el.closest(".plan-row"),pid=row.getAttribute("data-pid"),used=state.sales.some(function(x){return x.planId===pid;})||state.accounts.some(function(x){return x.planId===pid;});
     if(used){toast("Paket ini masih dipakai di penjualan/akun");return;}
     if(document.querySelectorAll(".plan-row").length<=1){toast("Minimal harus ada satu paket");return;}
     row.remove();return;}
   var act=el.getAttribute("data-act");if(!act)return;
+  if(act==="show-noacc"){ui.status="noacc";return;}
+  if(act==="autoassign"){var list=noAccActive().sort(function(a,b){return a.start<b.start?-1:1;}),ok=0,fail=0;
+    list.forEach(function(s){var pk=pickAccount(s.planId,s.start,s.end,s.id,Q(s));if(pk){s.accountId=pk;ok++;}else fail++;});
+    save();render();
+    openModal('<h2>Selesai</h2><div class="cap" style="margin-top:6px">'+ok+' langganan berhasil dihubungkan ke stok.'+(fail?' '+fail+' lainnya belum bisa karena tidak ada stok dengan paket yang cocok dan seat kosong. Tambah stok di menu <b>Stok Seat</b>, atau pilih stoknya secara manual.':'')+'</div><div class="actions"><button class="btn" data-close>OK</button></div>');return;}
   if(act==="new-sale"){if(!state.plans.length){toast("Buat paket dulu di Pengaturan");return;}saleForm(null,true);return;}
   if(act==="new-acc"){accForm(null,true);return;}
   if(act==="add-plan"){document.getElementById("plans").insertAdjacentHTML("beforeend",planRow({id:uid(),name:"",price:0}));return;}
   if(act==="backup"){download("cadangan-langganan-"+today()+".json",JSON.stringify(state,null,2),"application/json");toast("Cadangan diunduh");return;}
   if(act==="restore"){confirmBox("Pulihkan dari cadangan?","Semua data di perangkat ini akan <b>diganti</b> dengan isi file cadangan.","Pilih file",function(){document.getElementById("restore-file").click();});return;}
-  if(act==="csv"){var L=["Pelanggan,Kontak,Paket,Akun,Mulai,Berakhir,Harga,Status Bayar,Tanggal Bayar,Catatan"];
-    state.sales.slice().sort(function(a,b){return a.start<b.start?-1:1;}).forEach(function(s){L.push([s.customer,s.contact||"",planName(s.planId),(acc(s.accountId)||{}).name||"",s.start,s.end,s.price,s.paid?"Lunas":"Belum",s.paidDate||"",s.note||""].map(function(x){return'"'+String(x).replace(/"/g,'""')+'"';}).join(","));});
+  if(act==="csv"){var L=["Pelanggan,Kontak,Paket,Akun,Jumlah Seat,Mulai,Berakhir,Harga,Status Bayar,Tanggal Bayar,Catatan"];
+    state.sales.slice().sort(function(a,b){return a.start<b.start?-1:1;}).forEach(function(s){L.push([s.customer,s.contact||"",planName(s.planId),(acc(s.accountId)||{}).name||"",Q(s),s.start,s.end,s.price,s.paid?"Lunas":"Belum",s.paidDate||"",s.note||""].map(function(x){return'"'+String(x).replace(/"/g,'""')+'"';}).join(","));});
     download("penjualan-"+today()+".csv","﻿"+L.join("\n"),"text/csv");toast("CSV diunduh");return;}
   if(act==="wipe"){confirmBox("Hapus semua data?","Semua penjualan, akun, biaya, dan pengaturan akan dihapus permanen dari perangkat ini. Unduh cadangan dulu kalau masih dibutuhkan.","Hapus semua",function(){state=blank();commit("Semua data dihapus");});return;}
   if(act==="sample"){state=sampleData();commit("Data contoh dimuat");return;}
@@ -579,8 +681,10 @@ document.addEventListener("change",function(e){
       ["accounts","expenses"].forEach(function(k){if(!Array.isArray(d[k]))d[k]=[];});if(!d.settings)d.settings={};state=d;commit("Cadangan dipulihkan: "+d.sales.length+" penjualan");}
     catch(x){toast("File cadangan tidak valid");}el.value="";};r.readAsText(el.files[0]);return;}
   var f=el.form;if(!f)return;
+  if(f.id==="acc-form"){hppHint();if(el.name==="since"&&!f.dataset.id&&f.since.value)f.until.value=endAfterMonths(f.since.value,1);}
   if(f.id==="sale-form"){
-    if(el.name==="planId"){var p=plan(el.value);if(p&&!f.dataset.id)f.price.value=num(p.price);}
+    if(el.name==="planId"||el.name==="qty"){var p=plan(f.planId.value);if(p&&!f.dataset.id)f.price.value=num(p.price*Math.max(1,parseInt(f.qty.value,10)||1));}
+    if(!f.dataset.id&&(el.name==="planId"||el.name==="start"||el.name==="dur"||el.name==="end"||el.name==="qty")){var cur=acc(f.accountId.value);if(!cur||(cur.planId&&cur.planId!==f.planId.value)){var pk=pickAccount(f.planId.value,f.start.value,f.end.value,null,Math.max(1,parseInt(f.qty.value,10)||1));if(pk&&[].some.call(f.accountId.options,function(o){return o.value===pk;}))f.accountId.value=pk;}}
     if(el.name==="dur"||el.name==="start"){var dv=f.dur.value;if(dv!=="x"&&f.start.value)f.end.value=endAfterMonths(f.start.value,+dv);}
     if(el.name==="end")f.dur.value="x";
     if(el.name==="paid")document.getElementById("paidbox").style.display=el.checked?"":"none";
@@ -589,31 +693,34 @@ document.addEventListener("change",function(e){
 document.addEventListener("input",function(e){
   var el=e.target;
   if(el.classList.contains("amt")){var n=parseAmt(el.value);el.value=n?n.toLocaleString("id-ID"):"";}
+  if(el.form&&el.form.id==="acc-form")hppHint();
   if(el.id==="q"){ui.q=el.value;var pos=el.selectionStart;render();var q=document.getElementById("q");q.focus();try{q.setSelectionRange(pos,pos);}catch(x){}}
 });
 document.addEventListener("submit",function(e){
   var f=e.target;e.preventDefault();
   if(f.id==="sale-form"){
-    var d={customer:f.customer.value.trim(),contact:f.contact.value.trim(),planId:f.planId.value,accountId:f.accountId.value,start:f.start.value,end:f.end.value,price:parseAmt(f.price.value),paid:f.paid.checked,paidDate:f.paid.checked?f.paidDate.value:"",note:f.note.value.trim()};
+    var d={customer:f.customer.value.trim(),contact:f.contact.value.trim(),planId:f.planId.value,accountId:f.accountId.value,start:f.start.value,end:f.end.value,qty:Math.max(1,parseInt(f.qty.value,10)||1),price:parseAmt(f.price.value),paid:f.paid.checked,paidDate:f.paid.checked?f.paidDate.value:"",note:f.note.value.trim()};
     var err=document.getElementById("ferr");
     if(!d.customer){err.textContent="Nama pelanggan wajib diisi.";return;}
     if(!d.start||!d.end||d.end<d.start){err.textContent="Tanggal berakhir harus setelah tanggal mulai.";return;}
     if(d.paid&&!d.paidDate){err.textContent="Isi tanggal bayar.";return;}
     if(d.accountId){var a=acc(d.accountId),busy=state.sales.filter(function(x){return x.accountId===a.id&&x.id!==f.dataset.id&&x.start<=d.end&&x.end>=d.start;});
-      var peak=0;[d.start].concat(busy.map(function(x){return x.start;})).forEach(function(day){if(day<d.start||day>d.end)return;var c=busy.filter(function(x){return x.start<=day&&x.end>=day;}).length;if(c>peak)peak=c;});
-      if(peak>=a.seats){err.textContent="Akun "+a.name+" sudah penuh ("+a.seats+" seat) di periode itu. Pilih akun lain atau kosongkan.";return;}}
+      var peak=0;[d.start].concat(busy.map(function(x){return x.start;})).forEach(function(day){if(day<d.start||day>d.end)return;var c=sumQ(busy.filter(function(x){return x.start<=day&&x.end>=day;}));if(c>peak)peak=c;});
+      if(peak+d.qty>a.seats){err.textContent="Seat di stok "+a.name+" tidak cukup: tersisa "+Math.max(0,a.seats-peak)+" dari "+a.seats+" seat di periode itu. Kurangi jumlah, pilih stok lain, atau kosongkan.";return;}}
     if(f.dataset.id){var s=state.sales.find(function(x){return x.id===f.dataset.id;});Object.assign(s,d);}
     else{d.id=uid();d.created=Date.now();state.sales.push(d);}
     closeModal();commit("Penjualan disimpan");return;
   }
   if(f.id==="acc-form"){
-    var a2={name:f.name.value.trim(),planId:f.planId.value,seats:parseInt(f.seats.value,10)||0,cost:parseAmt(f.cost.value),since:f.since.value,until:f.until.value,note:f.note.value.trim()};
+    var amt=parseAmt(f.amount.value),md=f.costMode.value;
+    var a2={name:f.name.value.trim(),planId:f.planId.value,seats:parseInt(f.seats.value,10)||0,costMode:md,buy:md==="once"?amt:0,cost:md==="monthly"?amt:0,since:f.since.value,until:f.until.value,note:f.note.value.trim()};
     var er=document.getElementById("ferr");
-    if(!a2.name){er.textContent="Nama akun wajib diisi.";return;}
+    if(!a2.name){er.textContent="Nama stok wajib diisi.";return;}
+    if(f.dataset.id){var used=sumQ(state.sales.filter(function(x){return x.accountId===f.dataset.id&&(md==="once"||isActive(x));}));if(a2.seats<used){er.textContent="Sudah ada "+used+" seat terpakai di stok ini. Jumlah seat tidak boleh kurang dari itu.";return;}}
     if(a2.seats<1){er.textContent="Jumlah seat minimal 1.";return;}
-    if(a2.until&&a2.since&&a2.until<a2.since){er.textContent="Tanggal berhenti harus setelah tanggal aktif.";return;}
+    if(a2.until&&a2.since&&a2.until<a2.since){er.textContent="Masa aktif harus setelah tanggal beli.";return;}
     if(f.dataset.id){Object.assign(acc(f.dataset.id),a2);}else{a2.id=uid();state.accounts.push(a2);}
-    closeModal();commit("Akun disimpan");return;
+    closeModal();commit("Stok disimpan");return;
   }
   if(f.id==="exp-form"){
     var x={id:uid(),date:f.date.value,desc:f.desc.value.trim(),amount:parseAmt(f.amount.value)},ee=document.getElementById("eerr");
